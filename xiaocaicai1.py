@@ -28,7 +28,7 @@ TOKEN = (
     or os.environ.get("BOT_TOKEN")
     or ""
 ).strip()
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://shishi-888gg.onrender.com").rstrip("/")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://shishi-888gg-mjb8.onrender.com").rstrip("/")
 PORT = int(os.environ.get("PORT", "10000"))
 
 # ========== 品牌与价格（复制新机器人时主要改这里）==========
