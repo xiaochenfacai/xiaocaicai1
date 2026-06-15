@@ -56,6 +56,50 @@ if not TOKEN:
 bot = telebot.TeleBot(TOKEN)
 flask_app = Flask(__name__)
 USER_STATE = {}
+_CACHED_BOT_NAME = None
+
+
+def refresh_bot_display_name():
+    """从 Telegram 读取当前机器人对外显示名字，并写入缓存。"""
+    global _CACHED_BOT_NAME
+    try:
+        info = bot.get_my_name()
+        name = ""
+        if info is not None:
+            name = (getattr(info, "name", None) or "").strip()
+        _CACHED_BOT_NAME = name or BOT_NAME
+    except Exception as exc:
+        log.warning("get_my_name failed, fallback to default: %s", exc)
+        _CACHED_BOT_NAME = BOT_NAME
+    return _CACHED_BOT_NAME
+
+
+def get_bot_display_name():
+    """买家通过 set_my_name 改过的名字；未改过则用默认 BOT_NAME。"""
+    if _CACHED_BOT_NAME:
+        return _CACHED_BOT_NAME
+    return refresh_bot_display_name()
+
+
+def get_bot_short_name():
+    """品牌用简称，如「老弟机器人」→「老弟」。"""
+    name = get_bot_display_name()
+    if name.endswith("机器人"):
+        return name[:-3]
+    return name
+
+
+def get_bot_brand():
+    """如「老弟记账」「小财家记账」。"""
+    return f"{get_bot_short_name()}记账"
+
+
+def get_bot_join_name():
+    """入群欢迎语里的自称，如「老弟机器人」。"""
+    name = get_bot_display_name()
+    if name.endswith("机器人"):
+        return name
+    return f"{name}机器人"
 
 # ---------------------------------------------------------------------------
 # Blockchain
@@ -307,6 +351,29 @@ def update_setting(group_id, key, value):
         log.exception("update_setting: %s", exc)
 
 
+def normalize_billing_text(text):
+    """统一记账指令里的符号，兼容全角 + - 和 caption 文本。"""
+    text = (text or "").strip()
+    for src, dst in (("＋", "+"), ("－", "-"), ("—", "-"), ("–", "-")):
+        text = text.replace(src, dst)
+    return text
+
+
+def looks_like_billing_command(text):
+    text = normalize_billing_text(text)
+    if text in ("+0", "上课", "下课"):
+        return True
+    if re.match(r"^(.*?)([\+\-])(\d+(?:\.\d+)?)(?:/(\d+(?:\.\d+)?))?$", text):
+        return True
+    if re.match(r"^(.*?)(?:下发|ထုတ်)\s*(-?\d+(?:\.\d+)?)$", text):
+        return True
+    return False
+
+
+def get_message_text(message):
+    return normalize_billing_text(message.text or message.caption)
+
+
 def normalize_operator_name(name):
     name = (name or "").strip()
     if not name:
@@ -359,6 +426,8 @@ def apply_bot_display_name(name):
     ok = bot.set_my_name(name=clean)
     if ok is False:
         raise RuntimeError("Telegram 拒绝修改名字")
+    global _CACHED_BOT_NAME
+    _CACHED_BOT_NAME = clean
     return clean
 
 
@@ -570,8 +639,8 @@ def build_bill_report_text(group_id, target_date, show_all_categories=False):
         summary[rem]["rmb"] += row[2]
         summary[rem]["usdt"] += row[3]
 
-    lines = [f"📊 <b>账单汇总 ({target_date})</b>"]
-    lines.append(f"📥 <b>入款（{len(income)}笔）</b>")
+    lines = []
+    lines.append(f" <b>入款（{len(income)}笔）</b>")
     if income:
         for row in income[-5:]:
             uid = row[7] if len(row) > 7 else None
@@ -580,7 +649,7 @@ def build_bill_report_text(group_id, target_date, show_all_categories=False):
         lines.append("暂无入款")
 
     lines.append("")
-    lines.append("📥 <b>入款备注分类</b>")
+    lines.append(" <b>入款备注分类</b>")
     category_items = list(summary.items())
     visible_categories = category_items if show_all_categories else category_items[:3]
     if visible_categories:
@@ -596,7 +665,7 @@ def build_bill_report_text(group_id, target_date, show_all_categories=False):
         lines.append("<blockquote>暂无分类</blockquote>")
 
     lines.append("")
-    lines.append(f"📤 <b>下发（{len(expense)}笔）</b>")
+    lines.append(f" <b>下发（{len(expense)}笔）</b>")
     if expense:
         for row in expense[-5:]:
             uid = row[6] if len(row) > 6 else None
@@ -606,9 +675,9 @@ def build_bill_report_text(group_id, target_date, show_all_categories=False):
 
     lines.extend([
         "",
-        f"💰 <b>总入款:</b> {_tag_rmb(total_rmb)}",
-        f"📉 <b>费率:</b> {fee_rate * 100:.0f}%",
-        f"💱 <b>汇率:</b> {rate:.2f}",
+        f" <b>总入款:</b> {_tag_rmb(total_rmb)}",
+        f" <b>费率:</b> {fee_rate * 100:.0f}%",
+        f" <b>汇率:</b> {rate:.2f}",
         "",
         f"应下发: {total_usdt:.2f} U",
         f"已下发: {expense_usdt:.2f} U",
@@ -695,7 +764,7 @@ def send_private_welcome(chat_id, uid):
     _, lvl_desc, _, _ = get_user_permission_level(uid)
     bot.send_message(
         chat_id,
-        f"🤖 <b>您好！欢迎使用{BOT_BRAND}分布式管理中心</b>\n\n"
+        f"🤖 <b>您好！欢迎使用{get_bot_brand()}分布式管理中心</b>\n\n"
         f"👤 <b>当前身份：</b> <code>{lvl_desc}</code>\n"
         f"📌 请用<b>输入框下方常驻菜单</b>，或消息里的按钮操作：",
         parse_mode="HTML",
@@ -727,8 +796,8 @@ def process_private_menu(uid, chat_id, action):
     if action == "btn_manual_guide":
         bot.send_message(
             chat_id,
-            f"📖 <b>【{BOT_BRAND}】全功能业务操作指南</b>\n\n"
-            f"🤖 欢迎使用 <b>{BOT_NAME}</b> 机器人，以下为常用指令：\n\n"
+            f"📖 <b>【{get_bot_brand()}】全功能业务操作指南</b>\n\n"
+            f"🤖 欢迎使用 <b>{get_bot_short_name()}</b> 机器人，以下为常用指令：\n\n"
             "👑 <b>权限架构：</b>\n"
             "1. <b>最高级买家</b>：私聊菜单，可改机器人名字/头像，可指派二级权限人。\n"
             "2. <b>权限人(VIP2)</b>：可进群指派群操作人。\n"
@@ -836,7 +905,7 @@ def cmd_start(message):
     else:
         bot.send_message(
             message.chat.id,
-            f"🤖 <b>{BOT_BRAND}智能分布式记账系统已激活</b>\n\n"
+            f"🤖 <b>{get_bot_brand()}智能分布式记账系统已激活</b>\n\n"
             "👉 <b>群内核心记账命令：</b>\n"
             "• 发送 <code>上课</code> / <code>下课</code> 开启或封存账单\n"
             "• 发送 <code>+1000</code> 或 <code>+1000/7.3</code> 记入款\n"
@@ -871,7 +940,7 @@ def handle_my_chat_member(update: telebot.types.ChatMemberUpdated):
             bot.send_message(
                 update.chat.id,
                 "<b>感谢您把我拉进贵群！</b>\n\n"
-                f"我是{BOT_NAME}机器人🤖\n"
+                f"我是{get_bot_join_name()}🤖\n"
                 "请发送 <code>上课</code> 唤醒我，"
                 "并设置费率（如 <code>设置费率 5</code>），然后即可开始记账。",
                 parse_mode="HTML",
@@ -1003,9 +1072,12 @@ def handle_bill_category_more(call):
 # ---------------------------------------------------------------------------
 # Telegram handlers — all text messages
 # ---------------------------------------------------------------------------
-@bot.message_handler(func=lambda m: True)
+@bot.message_handler(
+    content_types=["text", "photo", "document"],
+    func=lambda m: bool((m.text or m.caption or "").strip()),
+)
 def handle_all_messages(message):
-    text = (message.text or message.caption or "").strip()
+    text = get_message_text(message)
     if not text:
         return
     gid = message.chat.id
@@ -1239,9 +1311,13 @@ def handle_all_messages(message):
         return
 
     if not get_setting(gid, "is_active"):
+        if looks_like_billing_command(text):
+            bot.reply_to(message, "⚠️ 请先发送「上课」开启记账。")
         return
 
     if not can_operate_in_group(gid, uid, tg_username):
+        if looks_like_billing_command(text):
+            bot.reply_to(message, "⚠️ 您不是本群操作人，无权记账。请联系买家设置操作人。")
         return
 
     if text == "+0":
@@ -1525,6 +1601,7 @@ def setup_bot_commands():
 
 def setup_webhook():
     setup_bot_commands()
+    refresh_bot_display_name()
     try:
         bot.remove_webhook()
         ok = bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
