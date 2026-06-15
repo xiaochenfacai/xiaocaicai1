@@ -39,6 +39,9 @@ PRICE_2_MONTH = 140
 PRICE_3_MONTH = 220
 
 FOUNDER_USERS = [8807178282]
+# 卖家联系方式：陌生人想买第二款机器人时展示。可填用户名，或留空自动读 SELLER_USER_ID 的 @用户名
+SELLER_USER_ID = int(os.environ.get("SELLER_USER_ID", str(FOUNDER_USERS[0])))
+SELLER_USERNAME = os.environ.get("SELLER_USERNAME", "laodiii888").strip().lstrip("@")
 TRON_ADDRESS = "TVnjLwDrGjYVRTa1ukfoE2mFTmCxtrjoCw"
 MAX_LEVEL2_VIPS = 5
 USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
@@ -307,6 +310,86 @@ def remove_vip_user(user_id):
         return deleted
     except Exception:
         return False
+
+
+def get_active_vip1_buyer_id():
+    """当前已购机的唯一 VIP1 买家 UID；无人购买时返回 None。"""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "SELECT user_id FROM vip_users WHERE level = 1 AND expire_time > ? LIMIT 1",
+            (now_str,),
+        )
+        row = c.fetchone()
+        conn.close()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+def can_submit_purchase(user_id):
+    """是否允许走购买/续费流程（本机仅一位买家，其他人需联系卖家）。"""
+    if user_id in FOUNDER_USERS:
+        return True
+    buyer_id = get_active_vip1_buyer_id()
+    if buyer_id is None:
+        return True
+    return user_id == buyer_id
+
+
+def get_seller_contact_line():
+    """卖家 Telegram 联系方式（HTML）。"""
+    if SELLER_USERNAME:
+        return f'<a href="https://t.me/{SELLER_USERNAME}">@{SELLER_USERNAME}</a>'
+    try:
+        chat = bot.get_chat(SELLER_USER_ID)
+        if getattr(chat, "username", None):
+            return f'<a href="https://t.me/{chat.username}">@{chat.username}</a>'
+    except Exception as exc:
+        log.warning("get seller username failed: %s", exc)
+    return f"UID <code>{SELLER_USER_ID}</code>"
+
+
+def build_bot_sold_message():
+    contact = get_seller_contact_line()
+    return (
+        "⚠️ <b>本机器人已有人购买。</b>\n\n"
+        f"如需购买同款机器人，请联系卖家：{contact}"
+    )
+
+
+def build_manual_guide_text():
+    return (
+        f"📖 <b>【{get_bot_brand()}】全功能业务操作指南</b>\n\n"
+        f"🤖 欢迎使用 <b>{get_bot_short_name()}</b> 机器人，以下为常用指令：\n\n"
+        "👑 <b>权限架构：</b>\n"
+        "1. <b>最高级买家</b>：私聊菜单，可改机器人名字/头像，可指派二级权限人。\n"
+        "2. <b>权限人(VIP2)</b>：可进群指派群操作人。\n"
+        "3. <b>操作人</b>：群内专职记账。\n\n"
+        "👥 <b>群内指令集：</b>\n"
+        "• <code>上课</code> / <code>下课</code> — 开启或封存今日记账\n"
+        "• <code>设置操作人 @用户名</code>\n"
+        "• <code>取掉操作人 @用户名</code>\n"
+        "• <code>设置汇率 7.4</code>\n"
+        "• <code>设置费率 5</code> — 费率 5 表示 5%\n"
+        "• <code>+1000</code> / <code>老弟+99</code> — 记入款\n"
+        "• <code>+1000/7.3</code> — 指定汇率入款\n"
+        "• <code>下发 800</code> — 记下发（USDT）\n"
+        "• <code>+0</code> — 查看今日账单\n"
+        "• <code>清单 备注名</code> — 查看某备注今日明细\n\n"
+        "🗑️ <b>删账命令</b>（需操作权限）：\n"
+        "• <code>删最后</code> — 撤销最近一笔\n"
+        "• <code>删今天</code> — 清空本群今日账单\n"
+        "• <code>删全部</code> — 清空本群全部历史账单\n\n"
+        "🔍 <b>查询 USDT 地址</b>（群/私聊均可）：\n"
+        "• 发送 <code>查看 T开头的34位波场地址</code>\n"
+        "• 例：<code>查看 TVnjLwDrGjYVRTa1ukfoE2mFTmCxtrjoCw</code>\n"
+        "• 返回该地址 USDT 余额与最近流水\n\n"
+        "🎨 <b>买家专属（私聊菜单）：</b>\n"
+        "• <b>改机器人名字</b> / <b>改机器人头像</b>（仅最高级买家）"
+    )
 
 
 def get_setting(group_id, key):
@@ -794,25 +877,7 @@ def process_private_menu(uid, chat_id, action):
         return None
 
     if action == "btn_manual_guide":
-        bot.send_message(
-            chat_id,
-            f"📖 <b>【{get_bot_brand()}】全功能业务操作指南</b>\n\n"
-            f"🤖 欢迎使用 <b>{get_bot_short_name()}</b> 机器人，以下为常用指令：\n\n"
-            "👑 <b>权限架构：</b>\n"
-            "1. <b>最高级买家</b>：私聊菜单，可改机器人名字/头像，可指派二级权限人。\n"
-            "2. <b>权限人(VIP2)</b>：可进群指派群操作人。\n"
-            "3. <b>操作人</b>：群内专职记账。\n\n"
-            "👥 <b>群内指令集：</b>\n"
-            "• <code>设置操作人 @用户名</code>\n"
-            "• <code>取掉操作人 @用户名</code>\n"
-            "• <code>设置汇率 7.4</code>\n"
-            "• <code>+5000/7.3 飞机备注</code>\n"
-            "• <code>下发 800</code>\n"
-            "• <code>+0</code>\n\n"
-            "🎨 <b>买家专属（私聊菜单）：</b>\n"
-            "• <b>改机器人名字</b> / <b>改机器人头像</b>（仅最高级买家）",
-            parse_mode="HTML",
-        )
+        bot.send_message(chat_id, build_manual_guide_text(), parse_mode="HTML")
         return None
 
     if action == "btn_set_bot_name":
@@ -840,6 +905,9 @@ def process_private_menu(uid, chat_id, action):
         return None
 
     if action == "btn_pay_usdt":
+        if not can_submit_purchase(uid):
+            bot.send_message(chat_id, build_bot_sold_message(), parse_mode="HTML")
+            return None
         bot.send_message(
             chat_id,
             f"💰 <b>USDT 授权价格套餐：</b>\n"
@@ -972,6 +1040,10 @@ def handle_receipt_photo(message):
             bot.reply_to(message, f"❌ 头像更新失败：{exc}")
         return
 
+    if not can_submit_purchase(uid):
+        bot.reply_to(message, build_bot_sold_message(), parse_mode="HTML")
+        return
+
     username = message.from_user.username or "无用户名"
     first_name = message.from_user.first_name or "买家"
     photo_id = message.photo[-1].file_id
@@ -1019,6 +1091,14 @@ def handle_auth_buttons(call):
     else:
         months = int(action)
         buyer_id = int(parts[2])
+        existing_buyer = get_active_vip1_buyer_id()
+        if existing_buyer and existing_buyer != buyer_id:
+            bot.answer_callback_query(
+                call.id,
+                "本机器人已有买家，无法再开通新的最高级买家。",
+                show_alert=True,
+            )
+            return
         expire_str = add_vip_user(buyer_id, f"user_{buyer_id}", months, level=1)
         try:
             bot.send_message(
