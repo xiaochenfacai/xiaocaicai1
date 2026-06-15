@@ -370,7 +370,7 @@ def build_manual_guide_text():
         "3. <b>操作人</b>：群内专职记账。\n\n"
         "👥 <b>群内指令集：</b>\n"
         "• <code>上课</code> / <code>下课</code> — 开启或封存今日记账\n"
-        "• <code>设置操作人 @用户名</code>\n"
+        "• <code>设置操作人 @用户名 @用户名2</code> — 可一次设置多个\n"
         "• <code>取掉操作人 @用户名</code>\n"
         "• <code>设置汇率 7.4</code>\n"
         "• <code>设置费率 5</code> — 费率 5 表示 5%\n"
@@ -553,12 +553,38 @@ def apply_bot_profile_photo(file_id):
 
 
 def extract_mention(text, entities):
+    mentions = extract_all_mentions(text, entities)
+    return mentions[0] if mentions else ""
+
+
+def extract_all_mentions(text, entities):
     if not entities:
-        return ""
+        return []
+    mentions = []
     for entity in entities:
         if entity.type == "mention":
-            return text[entity.offset: entity.offset + entity.length].strip()
-    return ""
+            mentions.append(text[entity.offset: entity.offset + entity.length].strip())
+    return mentions
+
+
+def parse_operator_targets(text, entities, command_prefix):
+    """从一条消息里解析多个 @操作人。"""
+    targets = []
+    seen = set()
+    for raw in extract_all_mentions(text, entities):
+        name = normalize_operator_name(raw)
+        key = name.lower()
+        if name and key not in seen:
+            seen.add(key)
+            targets.append(name)
+    remainder = text.replace(command_prefix, "", 1).strip() if command_prefix else text.strip()
+    for match in re.finditer(r"@([A-Za-z0-9_]{3,32})", remainder):
+        name = normalize_operator_name(f"@{match.group(1)}")
+        key = name.lower()
+        if name and key not in seen:
+            seen.add(key)
+            targets.append(name)
+    return targets
 
 
 # ---------------------------------------------------------------------------
@@ -985,7 +1011,7 @@ def cmd_start(message):
             "⚙️ <b>财务群管命令（买家老板/权限人）：</b>\n"
             "• <code>设置汇率 7.35</code>\n"
             "• <code>设置费率 5</code>\n"
-            "• <code>设置操作人 @用户名</code>\n"
+            "• <code>设置操作人 @用户名 @用户名2</code> — 可一次多个\n"
             "• <code>取掉操作人 @用户名</code>",
             parse_mode="HTML",
         )
@@ -1291,16 +1317,28 @@ def handle_all_messages(message):
         if not can_manage_group_operators(uid):
             bot.reply_to(message, "⚠️ 只有买家或二级权限人才能指派操作人。")
             return
-        target = extract_mention(text, message.entities) or text.replace("设置操作人", "").strip()
-        target = normalize_operator_name(target)
-        if not target:
-            bot.reply_to(message, "💡 用法：<code>设置操作人 @用户名</code>", parse_mode="HTML")
+        targets = parse_operator_targets(text, message.entities, "设置操作人")
+        if not targets:
+            bot.reply_to(
+                message,
+                "💡 用法：<code>设置操作人 @用户名</code>\n"
+                "也可一次多个：<code>设置操作人 @a @b @c</code>",
+                parse_mode="HTML",
+            )
             return
         ops = get_group_operators(gid)
-        if target not in ops:
-            ops.append(target)
+        added = []
+        for target in targets:
+            if target not in ops:
+                ops.append(target)
+                added.append(target)
+        if added:
             update_setting(gid, "operators", json.dumps(ops, ensure_ascii=False))
-        bot.reply_to(message, f"✅ 已将 <b>{target}</b> 设为本群操作人。", parse_mode="HTML")
+            names = "、".join(f"<b>{t}</b>" for t in added)
+            bot.reply_to(message, f"✅ 已设为本群操作人：{names}", parse_mode="HTML")
+        else:
+            names = "、".join(f"<b>{t}</b>" for t in targets)
+            bot.reply_to(message, f"ℹ️ {names} 已在操作人列表中。", parse_mode="HTML")
         return
 
     if text.startswith("取掉操作人") or text.startswith("取消操作人"):
