@@ -41,7 +41,7 @@ PRICE_3_MONTH = 220
 FOUNDER_USERS = [8807178282]
 # 卖家联系方式：陌生人想买第二款机器人时展示。可填用户名，或留空自动读 SELLER_USER_ID 的 @用户名
 SELLER_USER_ID = int(os.environ.get("SELLER_USER_ID", str(FOUNDER_USERS[0])))
-SELLER_USERNAME = os.environ.get("SELLER_USERNAME", "laodiii888").strip().lstrip("@")
+SELLER_USERNAME = os.environ.get("SELLER_USERNAME", "@laodiii888").strip().lstrip("@")
 TRON_ADDRESS = "TVnjLwDrGjYVRTa1ukfoE2mFTmCxtrjoCw"
 MAX_LEVEL2_VIPS = 5
 USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
@@ -378,15 +378,17 @@ def build_manual_guide_text():
         "• <code>+1000/7.3</code> — 指定汇率入款\n"
         "• <code>下发 800</code> — 记下发（USDT）\n"
         "• <code>+0</code> — 查看今日账单\n"
-        "• <code>清单 备注名</code> — 查看某备注今日明细\n\n"
+        "• <code>查看 备注名</code> — 查看某备注今日明细\n\n"
         "🗑️ <b>删账命令</b>（需操作权限）：\n"
         "• <code>删最后</code> — 撤销最近一笔\n"
+        "• <code>删 备注名</code> — 删当天该备注的所有进单\n"
         "• <code>删今天</code> — 清空本群今日账单\n"
         "• <code>删全部</code> — 清空本群全部历史账单\n\n"
         "🔍 <b>查询 USDT 地址</b>（群/私聊均可）：\n"
         "• 发送 <code>查看 T开头的34位波场地址</code>\n"
         "• 例：<code>查看 TVnjLwDrGjYVRTa1ukfoE2mFTmCxtrjoCw</code>\n"
-        "• 返回该地址 USDT 余额与最近流水\n\n"
+        "• 返回该地址 USDT 余额与最近流水\n"
+        "• （群内 <code>查看 备注名</code> 为查进单，不是查链上地址）\n\n"
         "🎨 <b>买家专属（私聊菜单）：</b>\n"
         "• <b>改机器人名字</b> / <b>改机器人头像</b>（仅最高级买家）"
     )
@@ -1348,31 +1350,58 @@ def handle_all_messages(message):
         send_text_bill_report(gid, gid, today)
         return
 
-    if text.startswith("清单"):
-        remark = text.replace("清单", "", 1).strip()
+    if text.startswith("删") and text not in ("删最后", "删今天", "删全部"):
+        if not can_operate_in_group(gid, uid, tg_username):
+            bot.reply_to(message, "⚠️ 无权删账。")
+            return
+        remark = text[1:].strip()
         if not remark:
-            bot.reply_to(message, "💡 用法：清单 飞机群公款")
+            bot.reply_to(message, "💡 用法：删 飞机群公款")
             return
         conn = get_db()
         c = conn.cursor()
         c.execute(
-            "SELECT timestamp, amount, usdt_amount, username FROM bills "
-            "WHERE group_id = ? AND date_str = ? AND remark = ? AND bill_type = 'income'",
+            "DELETE FROM bills WHERE group_id = ? AND date_str = ? AND remark = ? AND bill_type = 'income'",
             (gid, today, remark),
         )
-        rows = c.fetchall()
+        deleted = c.rowcount
+        conn.commit()
         conn.close()
-        if not rows:
+        if deleted:
+            bot.reply_to(message, f"🗑️ 已删除今日备注【{remark}】共 {deleted} 笔进单。")
+            send_text_bill_report(gid, gid, today)
+        else:
             bot.reply_to(message, f"🔍 今日无备注【{remark}】的进单。")
-            return
-        detail_lines = [f"📋 <b>{_tag_remark(remark).strip()}进单明细</b>"]
-        total_r, total_u = 0.0, 0.0
-        for ts, amt, uamt, uname in rows:
-            detail_lines.append(f"{ts[11:16]} {_tag_rmb(amt)} RMB→{uamt:.1f}U {_tag_operator(uname)}")
-            total_r += amt
-            total_u += uamt
-        detail_lines.append(f"合计 {_tag_rmb(total_r)} RMB / {total_u:.1f} USDT")
-        bot.reply_to(message, "\n".join(detail_lines), parse_mode="HTML")
+        return
+
+    if text.startswith("查看"):
+        parts = text.split(maxsplit=1)
+        if len(parts) == 2:
+            remark = parts[1].strip()
+            if remark.startswith("T") and len(remark) == 34:
+                return
+            conn = get_db()
+            c = conn.cursor()
+            c.execute(
+                "SELECT timestamp, amount, usdt_amount, username FROM bills "
+                "WHERE group_id = ? AND date_str = ? AND remark = ? AND bill_type = 'income'",
+                (gid, today, remark),
+            )
+            rows = c.fetchall()
+            conn.close()
+            if not rows:
+                bot.reply_to(message, f"🔍 今日无备注【{remark}】的进单。")
+                return
+            detail_lines = [f"📋 <b>{_tag_remark(remark).strip()}进单明细</b>"]
+            total_r, total_u = 0.0, 0.0
+            for ts, amt, uamt, uname in rows:
+                detail_lines.append(f"{ts[11:16]} {_tag_rmb(amt)} RMB→{uamt:.1f}U {_tag_operator(uname)}")
+                total_r += amt
+                total_u += uamt
+            detail_lines.append(f"合计 {_tag_rmb(total_r)} RMB / {total_u:.1f} USDT")
+            bot.reply_to(message, "\n".join(detail_lines), parse_mode="HTML")
+        else:
+            bot.reply_to(message, "💡 用法：查看 飞机群公款")
         return
 
     if text == "上课":
